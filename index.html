@@ -776,47 +776,116 @@
         }
         
         async function displayResults(data, startDate, endDate, metricId, tavusApiKey) {
-            const conversations = data.data || [];
-            const totalMinutes = conversations.reduce((sum, conv) => sum + conv.usage[0].quantity, 0);
-            const maxMinutes = Math.max(...conversations.map(conv => conv.usage[0].quantity));
-            
+            // 👇 Set this to the metric that uses group_by=conversation_id
+            const targetMetricId = "3ZfbspMffPDa8kAJ";
+            const isConversationMetric = metricId === targetMetricId;
+        
             const metricName = document.getElementById('metricId').selectedOptions[0].textContent;
-            
-            // Update summary
-            document.getElementById('summary').innerHTML = `
-                <div class="summary-item">📊 Total Conversations: ${conversations.length}</div>
-                <div class="summary-item">⏱️ Total Minutes: ${totalMinutes.toFixed(1)}</div>
-                <div class="summary-item">📈 Average: ${(totalMinutes / conversations.length).toFixed(1)} min</div>
-                <div class="summary-item">📅 Period: ${startDate} to ${endDate}</div>
-                <div class="summary-item">📋 Metric: ${metricName}</div>
-            `;
-            
-            // Sort conversations by usage initially (will re-sort by date after Tavus data loads)
-            conversations.sort((a, b) => b.usage[0].quantity - a.usage[0].quantity);
-            
-            // Update loading message and show progress bar
+            const tableBody = document.getElementById('usageTableBody');
             const loadingMessage = document.getElementById('loadingMessage');
             const progressBar = document.getElementById('progressBar');
             const progressFill = document.getElementById('progressFill');
-            
+        
+            tableBody.innerHTML = '';
+        
+            if (!isConversationMetric) {
+                const topLevel = (data && data.data && data.data[0]) || {};
+                const usageEntries = topLevel.usage || [];
+        
+                const totalQuantity = usageEntries.reduce((sum, u) => sum + (u.quantity || 0), 0);
+                const maxQuantity = usageEntries.reduce((max, u) => Math.max(max, u.quantity || 0), 0) || 1;
+        
+                // Simple summary for non-conversation metrics
+                document.getElementById('summary').innerHTML = `
+                    <div class="summary-item">📊 Total Usage: ${totalQuantity.toFixed(1)}</div>
+                    <div class="summary-item">📈 Entries: ${usageEntries.length}</div>
+                    <div class="summary-item">📅 Period: ${startDate} to ${endDate}</div>
+                    <div class="summary-item">📋 Metric: ${metricName}</div>
+                `;
+        
+                // No Tavus conversation lookup in this mode
+                loadingMessage.textContent = 'No per-conversation details for this metric.';
+                progressBar.style.display = 'none';
+                progressFill.style.width = '0%';
+        
+                // Render each usage entry as a row (time bucket)
+                usageEntries.forEach((u, index) => {
+                    const quantity = u.quantity || 0;
+                    const percentage = totalQuantity ? ((quantity / totalQuantity) * 100).toFixed(1) : '0.0';
+                    const barWidth = (quantity / maxQuantity) * 200; // 200px max
+        
+                    const timeframeLabel = (u.timeframe_start && u.timeframe_end)
+                        ? `${new Date(u.timeframe_start).toLocaleString()} → ${new Date(u.timeframe_end).toLocaleString()}`
+                        : 'N/A';
+        
+                    const row = tableBody.insertRow();
+                    row.innerHTML = `
+                        <td>
+                            <span class="conversation-id">N/A</span>
+                        </td>
+                        <td class="tavus-column">N/A</td>
+                        <td class="tavus-column">N/A</td>
+                        <td class="tavus-column">N/A</td>
+                        <td class="tavus-column">${timeframeLabel}</td>
+                        <td class="tavus-column">N/A</td>
+                        <td class="tavus-column">N/A</td>
+                        <td class="tavus-column">N/A</td>
+                        <td>${quantity.toFixed(1)}</td>
+                        <td>
+                            <div class="usage-bar-container">
+                                <div class="usage-bar" style="width: ${barWidth}px;"></div>
+                                <div class="usage-percentage">${percentage}%</div>
+                            </div>
+                        </td>
+                        <td>
+                            <a href="https://tavus.retool.com/app/company-detail#BillingID=${currentBillingAccountId || ''}" 
+                               target="_blank" 
+                               class="plume-btn">
+                                View in Plume
+                            </a>
+                        </td>
+                    `;
+                });
+        
+                document.getElementById('results').style.display = 'block';
+                return; // ✅ Important: stop here for non-conversation metrics
+            }
+        
+            // ---------------- CONVERSATION METRIC MODE (metricId === targetMetricId) ----------------
+        
+            const conversations = data.data || [];
+            const totalMinutes = conversations.reduce((sum, conv) => sum + (conv.usage?.[0]?.quantity || 0), 0);
+            const maxMinutes = conversations.reduce(
+                (max, conv) => Math.max(max, conv.usage?.[0]?.quantity || 0),
+                0
+            ) || 1;
+        
+            document.getElementById('summary').innerHTML = `
+                <div class="summary-item">📊 Total Conversations: ${conversations.length}</div>
+                <div class="summary-item">⏱️ Total Minutes: ${totalMinutes.toFixed(1)}</div>
+                <div class="summary-item">📈 Average: ${conversations.length ? (totalMinutes / conversations.length).toFixed(1) : '0.0'} min</div>
+                <div class="summary-item">📅 Period: ${startDate} to ${endDate}</div>
+                <div class="summary-item">📋 Metric: ${metricName}</div>
+            `;
+        
+            // Sort conversations by usage initially
+            conversations.sort((a, b) => (b.usage?.[0]?.quantity || 0) - (a.usage?.[0]?.quantity || 0));
+        
+            // Show loading UI for Tavus enrichment
             loadingMessage.textContent = `Loading conversation details... (0/${conversations.length})`;
             progressBar.style.display = 'block';
             progressFill.style.width = '0%';
-            
-            // Progress tracking
+        
             let completedCount = 0;
-            
-            // Update table with loading placeholders
-            const tableBody = document.getElementById('usageTableBody');
             tableBody.innerHTML = '';
-            
-            // Show basic data first, then enhance with Tavus data
+        
+            // Initial table with placeholders
             conversations.forEach(conv => {
-                const minutes = conv.usage[0].quantity;
-                const percentage = ((minutes / totalMinutes) * 100).toFixed(1);
-                const barWidth = (minutes / maxMinutes) * 200; // 200px max width
-                const conversationId = conv.metric_group.property_value;
-                
+                const minutes = conv.usage?.[0]?.quantity || 0;
+                const percentage = totalMinutes ? ((minutes / totalMinutes) * 100).toFixed(1) : '0.0';
+                const barWidth = (minutes / maxMinutes) * 200;
+                const conversationId = conv.metric_group?.property_value || 'Unknown';
+        
                 const row = tableBody.insertRow();
                 row.innerHTML = `
                     <td>
@@ -838,22 +907,24 @@
                         </div>
                     </td>
                     <td>
-                        <a href="https://tavus.retool.com/app/company-detail#BillingID=${currentBillingAccountId || ''}&ConversationID=${conversationId}&PersonaID=&Tab=Conversations" target="_blank" class="plume-btn">View in Plume</a>
+                        <a href="https://tavus.retool.com/app/company-detail#BillingID=${currentBillingAccountId || ''}&ConversationID=${conversationId}&PersonaID=&Tab=Conversations" target="_blank" class="plume-btn">
+                            View in Plume
+                        </a>
                     </td>
                 `;
             });
-            
-            // Fetch Tavus data for each conversation and collect enhanced data
+        
+            // Tavus enrichment
             const enhancedConversations = [];
-            
             const tavusPromises = conversations.map(async (conv) => {
-                const conversationId = conv.metric_group.property_value;
+                const minutes = conv.usage?.[0]?.quantity || 0;
+                const conversationId = conv.metric_group?.property_value || 'Unknown';
+        
                 const tavusData = await fetchTavusConversationDetails(conversationId, tavusApiKey);
-                
-                // Extract shutdown event data from events array
+        
                 let shutdownTimestamp = null;
                 let shutdownReason = 'N/A';
-                
+        
                 if (tavusData?.events && Array.isArray(tavusData.events)) {
                     const shutdownEvent = tavusData.events.find(event => event.event_type === 'system.shutdown');
                     if (shutdownEvent) {
@@ -861,12 +932,12 @@
                         shutdownReason = shutdownEvent.properties?.shutdown_reason || 'N/A';
                     }
                 }
-                
+        
                 const enhancedConv = {
                     conversationId: conversationId,
-                    minutes: conv.usage[0].quantity,
-                    percentage: ((conv.usage[0].quantity / totalMinutes) * 100).toFixed(1),
-                    barWidth: (conv.usage[0].quantity / maxMinutes) * 200,
+                    minutes,
+                    percentage: totalMinutes ? ((minutes / totalMinutes) * 100).toFixed(1) : '0.0',
+                    barWidth: (minutes / maxMinutes) * 200,
                     name: tavusData?.conversation_name || 'N/A',
                     replicaId: tavusData?.replica_id || 'N/A',
                     personaId: tavusData?.persona_id || 'N/A',
@@ -874,11 +945,11 @@
                     endDateTime: tavusData?.updated_at || null,
                     startDateTimeDisplay: tavusData?.created_at ? new Date(tavusData.created_at).toLocaleString() : 'N/A',
                     endDateTimeDisplay: tavusData?.updated_at ? new Date(tavusData.updated_at).toLocaleString() : 'N/A',
-                    shutdownTimestamp: shutdownTimestamp,
-                    shutdownReason: shutdownReason,
+                    shutdownTimestamp,
+                    shutdownReason,
                     shutdownTimestampDisplay: shutdownTimestamp ? new Date(shutdownTimestamp).toLocaleString() : 'N/A'
                 };
-                
+        
                 if (!tavusData) {
                     enhancedConv.name = 'Error';
                     enhancedConv.replicaId = 'Error';
@@ -888,22 +959,23 @@
                     enhancedConv.shutdownTimestampDisplay = 'Error';
                     enhancedConv.shutdownReason = 'Error';
                 }
-                
+        
                 enhancedConversations.push(enhancedConv);
-                
-                // Update progress
+        
+                // Progress UI
                 completedCount++;
-                const progressPercentage = Math.round((completedCount / conversations.length) * 100);
+                const progressPercentage = conversations.length
+                    ? Math.round((completedCount / conversations.length) * 100)
+                    : 100;
                 loadingMessage.textContent = `Loading conversation details... (${completedCount}/${conversations.length}) - ${progressPercentage}%`;
                 progressFill.style.width = `${progressPercentage}%`;
-                
+        
                 return enhancedConv;
             });
-            
-            // Wait for all Tavus API calls to complete
+        
             await Promise.all(tavusPromises);
-            
-            // Sort by start datetime (newest first), fallback to usage if no start time
+        
+            // Sort enriched data
             enhancedConversations.sort((a, b) => {
                 if (a.startDateTime && b.startDateTime) {
                     return new Date(b.startDateTime) - new Date(a.startDateTime);
@@ -912,11 +984,11 @@
                 } else if (!a.startDateTime && b.startDateTime) {
                     return 1;
                 } else {
-                    return b.minutes - a.minutes; // fallback to usage sort
+                    return b.minutes - a.minutes;
                 }
             });
-            
-            // Re-render table with sorted data
+        
+            // Re-render table with enriched data
             tableBody.innerHTML = '';
             enhancedConversations.forEach(conv => {
                 const row = tableBody.insertRow();
@@ -940,22 +1012,16 @@
                         </div>
                     </td>
                     <td>
-                        <a href="https://tavus.retool.com/app/company-detail#BillingID=${currentBillingAccountId || ''}&ConversationID=${conv.conversationId}&PersonaID=&Tab=Conversations" target="_blank" class="plume-btn">View in Plume</a>
+                        <a href="https://tavus.retool.com/app/company-detail#BillingID=${currentBillingAccountId || ''}&ConversationID=${conv.conversationId}&PersonaID=&Tab=Conversations" target="_blank" class="plume-btn">
+                            View in Plume
+                        </a>
                     </td>
                 `;
             });
-            
+        
             document.getElementById('results').style.display = 'block';
         }
-        
-        function copyToClipboard(text) {
-            navigator.clipboard.writeText(text).then(function() {
-                // You could add a toast notification here
-                console.log('Copied to clipboard:', text);
-            }, function(err) {
-                console.error('Could not copy text: ', err);
-            });
-        }
+
     </script>
 </body>
 </html>
